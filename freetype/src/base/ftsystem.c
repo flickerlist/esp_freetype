@@ -33,6 +33,10 @@
 #include <freetype/fterrors.h>
 #include <freetype/fttypes.h>
 
+#ifdef ESP_PLATFORM
+extern int esp_task_wdt_reset( void ) __attribute__((weak));
+#endif
+
 
   /**************************************************************************
    *
@@ -232,7 +236,19 @@
     if ( !count )
       return 0;
 
-    return (unsigned long)ft_fread( buffer, 1, count, file );
+    {
+      unsigned long read_count;
+#ifdef ESP_PLATFORM
+      if ( esp_task_wdt_reset )
+        esp_task_wdt_reset();
+#endif
+      read_count = (unsigned long)ft_fread( buffer, 1, count, file );
+#ifdef ESP_PLATFORM
+      if ( esp_task_wdt_reset )
+        esp_task_wdt_reset();
+#endif
+      return read_count;
+    }
   }
 
 
