@@ -287,6 +287,9 @@
 
     FT_UNUSED( glyph_index );
 
+    /* 在分配帧和读 TF 之前拒绝异常长度；启动校验后仍保留运行时防线。 */
+    if ( byte_count > TT_MAX_SAFE_GLYPH_BYTES )
+      return FT_THROW( Invalid_Outline );
 
     /* the following line sets the `error' variable through macros! */
     if ( FT_STREAM_SEEK( offset ) || FT_FRAME_ENTER( byte_count ) )

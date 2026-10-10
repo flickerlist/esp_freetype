@@ -67,6 +67,18 @@
     FT_ULong  table_len;
     FT_Int    shift;
 
+    /* 启动只校验已加载的表目录，不读取 glyf 正文，也不计算整文件哈希。
+     * 用减法检查范围，避免坏文件中的 Offset + Length 溢出。 */
+    {
+      FT_UInt i;
+      for ( i = 0; i < face->num_tables; i++ )
+      {
+        TT_Table table = face->dir_tables + i;
+        if ( table->Offset > stream->size ||
+             table->Length > stream->size - table->Offset )
+          return FT_THROW( Invalid_Table );
+      }
+    }
 
     /* we need the size of the `glyf' table for malformed `loca' tables */
     error = face->goto_table( face, TTAG_glyf, stream, &face->glyf_len );
@@ -99,6 +111,13 @@
     }
 
     shift = face->header.Index_To_Loc_Format != 0 ? 2 : 1;
+
+    /* 严格拒绝损坏的索引；原有兼容修正会掩盖缺失项，随后在 GUI
+     * 自动 hinting 中反复读取 glyf 尾部，最终触发看门狗。 */
+    if ( ( face->header.Index_To_Loc_Format != 0 &&
+           face->header.Index_To_Loc_Format != 1 ) ||
+         table_len != ( (FT_ULong)face->root.num_glyphs + 1 ) << shift )
+      return FT_THROW( Invalid_Table );
 
     if ( table_len > 0x10000UL << shift )
     {
@@ -172,6 +191,26 @@
     if ( FT_FRAME_EXTRACT( table_len, face->glyph_locations ) )
       goto Exit;
 
+    /* FreeType 本来就会读取 loca。遍历这份内存索引，无额外 TF I/O。
+     * 相邻偏移允许相等（空字形），但不允许倒序、越界或巨型字形。 */
+    {
+      FT_Byte* p        = face->glyph_locations;
+      FT_ULong previous = 0;
+      FT_ULong i;
+      for ( i = 0; i < face->num_locations; i++ )
+      {
+        FT_ULong position = shift == 2 ? FT_NEXT_ULONG( p )
+                                       : (FT_ULong)FT_NEXT_USHORT( p ) << 1;
+        if ( position < previous || position > face->glyf_len ||
+             position - previous > TT_MAX_SAFE_GLYPH_BYTES )
+        {
+          error = FT_THROW( Invalid_Table );
+          goto Exit;
+        }
+        previous = position;
+      }
+    }
+
     FT_TRACE2(( "loaded\n" ));
 
   Exit:
@@ -230,48 +269,23 @@
       FT_TRACE1(( "                     "
                   " exceeding the end of `glyf' table (0x%08lx)\n",
                   ttface->glyf_len ));
-      *asize = 0;
+      *asize = TT_MAX_SAFE_GLYPH_BYTES + 1;
       return 0;
     }
 
     if ( pos2 > ttface->glyf_len )
     {
-      /* We try to sanitize the last `loca' entry. */
-      if ( gindex == ttface->num_locations - 2 )
-      {
-        FT_TRACE1(( "tt_face_get_location:"
-                    " too large size (%ld bytes) found for glyph index %d,\n",
-                    pos2 - pos1, gindex ));
-        FT_TRACE1(( "                     "
-                    " truncating at the end of `glyf' table to %ld bytes\n",
-                    ttface->glyf_len - pos1 ));
-        pos2 = ttface->glyf_len;
-      }
-      else
-      {
-        FT_TRACE1(( "tt_face_get_location:"
-                    " too large offset (0x%08lx) found for glyph index %d,\n",
-                    pos2, gindex + 1 ));
-        FT_TRACE1(( "                     "
-                    " exceeding the end of `glyf' table (0x%08lx)\n",
-                    ttface->glyf_len ));
-        *asize = 0;
-        return 0;
-      }
+      /* 不再截断最后一个字形；越界也是损坏，须显式失败并停用后端。 */
+      *asize = TT_MAX_SAFE_GLYPH_BYTES + 1;
+      return 0;
     }
 
-    /* The `loca' table must be ordered; it refers to the length of */
-    /* an entry as the difference between the current and the next  */
-    /* position.  However, there do exist (malformed) fonts which   */
-    /* don't obey this rule, so we are only able to provide an      */
-    /* upper bound for the size.                                    */
-    /*                                                              */
-    /* We get (intentionally) a wrong, non-zero result in case the  */
-    /* `glyf' table is missing.                                     */
+    /* 索引若在打开后损坏，交给字形帧入口返回错误，禁止读取 glyf 尾部。
+     * 不能用长度 0：那会把损坏字形误当作合法空白。 */
     if ( pos2 >= pos1 )
       *asize = (FT_ULong)( pos2 - pos1 );
     else
-      *asize = (FT_ULong)( ttface->glyf_len - pos1 );
+      *asize = TT_MAX_SAFE_GLYPH_BYTES + 1;
 
     return pos1;
   }

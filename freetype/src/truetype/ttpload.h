@@ -25,6 +25,9 @@
 
 FT_BEGIN_HEADER
 
+  /* TF 卡字体不允许单个字形读取超过 64 KiB；正常 GLOB 字形最大约 1 KiB。 */
+#define TT_MAX_SAFE_GLYPH_BYTES 65536UL
+
 
   FT_LOCAL( FT_Error )
   tt_face_load_loca( TT_Face    face,
